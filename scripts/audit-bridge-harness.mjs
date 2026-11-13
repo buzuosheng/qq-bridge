@@ -217,6 +217,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     sniffImage: mediaNormalize.sniffImage,
     planNormalization: mediaNormalize.planNormalization,
     planAnimation: mediaNormalize.planAnimation,
+    compressImageForCollect: mediaNormalize.compressImageForCollect,
+    COLLECT_DEFAULTS: mediaNormalize.COLLECT_DEFAULTS,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),

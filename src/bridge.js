@@ -23,13 +23,14 @@ import { discoverDshBaseUrl } from './dsh-endpoint.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { looksLikeUnfinished } from './v2-wait.js';
-import { compactModelMessage, describeAge, sanitizeUntrustedText } from './qq-model-view.js';
+import { compactModelMessage, describeAge, sanitizeUntrustedText, collectionLooksLikeVisionMedia, VISION_TOOL_HINT } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
-import { normalizeImageForModel } from './media-normalize.js';
+import { normalizeImageForModel, compressImageForCollect, COLLECT_DEFAULTS } from './media-normalize.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
+import { describeCardSegment } from './card-message.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import {
@@ -69,6 +70,7 @@ const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
 const SLANG_SESSION_FILE = path.join(STATE_DIR, 'slang-session.json');
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
+const CHAT_TITLE_CACHE_FILE = path.join(STATE_DIR, 'chat-titles.json');
 // 操作者为每个会话预写的「初始提示词」（见 main() 里的 initialPrompts）。
 // 单独一个文件：它属于操作者配置，不能随 social-v2.json 的会话状态一起被重置清掉。
 const INITIAL_PROMPTS_FILE = path.join(STATE_DIR, 'initial-prompts.json');
@@ -887,7 +889,8 @@ function loadConfig() {
           enabled: true,           // AI 收藏他人表情总开关
           maxPerMinute: 2,         // 每分钟最多收藏次数
           maxPerHour: 10,          // 每小时最多收藏次数
-          maxRemarkChars: 20       // 收藏时备注最大长度
+          maxRemarkChars: 20,      // 收藏时备注最大长度
+          maxCollectBytes: COLLECT_DEFAULTS.maxCollectBytes  // QQ 收藏体积上限，超出先 ffmpeg 压缩
         }
       },
       proactive: {
@@ -996,6 +999,7 @@ function loadConfig() {
       maxPerMinute: 2,
       maxPerHour: 10,
       maxRemarkChars: 20,
+      maxCollectBytes: COLLECT_DEFAULTS.maxCollectBytes,
       ...((cfg.socialV2?.sticker?.collect) ?? {})
     },
     ...(cfg.socialV2?.sticker ?? {}),
@@ -1004,6 +1008,7 @@ function loadConfig() {
       maxPerMinute: 2,
       maxPerHour: 10,
       maxRemarkChars: 20,
+      maxCollectBytes: COLLECT_DEFAULTS.maxCollectBytes,
       ...((cfg.socialV2?.sticker?.collect) ?? {})
     }
   };
@@ -1254,6 +1259,125 @@ function localClock(atMs = Date.now()) {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+const SESSION_TITLE_MAX_LEN = 40;
+const SHANGHAI_TZ = 'Asia/Shanghai';
+
+/** Format a date in Asia/Shanghai as MM-DD, or YYYY-MM-DD when not the current year. */
+function shanghaiDateParts(atMs = Date.now()) {
+  const ms = Number(atMs);
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  if (!Number.isFinite(d.getTime())) return null;
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: SHANGHAI_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const parts = fmt.formatToParts(d);
+  const pick = (type) => parts.find((p) => p.type === type)?.value;
+  const year = pick('year');
+  const month = pick('month');
+  const day = pick('day');
+  if (!year || !month || !day) return null;
+  return { year, month, day };
+}
+
+function formatSessionDateLabel(atMs, nowMs = Date.now()) {
+  const parts = shanghaiDateParts(atMs);
+  const now = shanghaiDateParts(nowMs);
+  if (!parts) return now ? `${now.month}-${now.day}` : '??-??';
+  if (!now || parts.year !== now.year) return `${parts.year}-${parts.month}-${parts.day}`;
+  return `${parts.month}-${parts.day}`;
+}
+
+function coerceTimestamp(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) {
+    const t = value.getTime();
+    return Number.isFinite(t) && t > 0 ? t : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value <= 0) return null;
+    return value < 1e11 ? value * 1000 : value;
+  }
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (!s) return null;
+    if (/^\d+(\.\d+)?$/.test(s)) return coerceTimestamp(Number(s));
+    const t = Date.parse(s);
+    return Number.isFinite(t) ? t : null;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.seconds === 'number') {
+      const nano = typeof value.nanos === 'number' ? value.nanos / 1e6 : 0;
+      return coerceTimestamp(value.seconds * 1000 + nano);
+    }
+    if (value.value != null) return coerceTimestamp(value.value);
+  }
+  return null;
+}
+
+function extractSessionCreatedAt(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 3) return null;
+  const keys = [
+    'createdAt', 'created_at', 'createdAtMs', 'createdTime', 'createTime',
+    'created', 'ctime', 'created_ms', 'create_time'
+  ];
+  for (const k of keys) {
+    if (obj[k] != null) {
+      const t = coerceTimestamp(obj[k]);
+      if (t) return t;
+    }
+  }
+  for (const nest of ['session', 'info', 'meta', 'value']) {
+    if (obj[nest] && typeof obj[nest] === 'object') {
+      const t = extractSessionCreatedAt(obj[nest], depth + 1);
+      if (t) return t;
+    }
+  }
+  return null;
+}
+
+function collapseTitleText(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function visibleTitleName(text) {
+  const cleaned = collapseTitleText(text).replace(/[\u0000-\u001F\u007F-\u009F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g, '').replace(/\s+/g, ' ').trim();
+  return cleaned;
+}
+
+function clampSessionTitle(prefix, name, dateLabel) {
+  const suffix = ` \u00b7 ${dateLabel}`;
+  const mid = ' \u00b7 ';
+  const budget = SESSION_TITLE_MAX_LEN - prefix.length - mid.length - suffix.length;
+  let display = collapseTitleText(name);
+  if (budget < 1) {
+    const fallback = `${prefix}${suffix}`;
+    return fallback.length <= SESSION_TITLE_MAX_LEN ? fallback : fallback.slice(0, SESSION_TITLE_MAX_LEN);
+  }
+  if (display.length > budget) {
+    display = `${display.slice(0, Math.max(1, budget - 1))}\u2026`;
+  }
+  return `${prefix}${mid}${display}${suffix}`;
+}
+
+/** kind: 'group' | 'private'. name may be empty; id is the numeric fallback. */
+function buildQqSessionTitle({ kind, name, id, dateMs, nowMs = Date.now() }) {
+  const dateLabel = formatSessionDateLabel(dateMs ?? nowMs, nowMs);
+  const prefix = kind === 'group' ? '\u7fa4' : '\u79c1\u804a';
+  const fallback = String(id ?? '').trim();
+  const display = visibleTitleName(name) || fallback || '\u672a\u77e5';
+  return clampSessionTitle(prefix, display, dateLabel);
+}
+
+function buildLearnerSessionTitle(dateMs, nowMs = Date.now()) {
+  const dateLabel = formatSessionDateLabel(dateMs ?? nowMs, nowMs);
+  const title = `\u9ed1\u8bdd\u5b66\u4e60 \u00b7 ${dateLabel}`;
+  return title.length <= SESSION_TITLE_MAX_LEN ? title : title.slice(0, SESSION_TITLE_MAX_LEN);
+}
+
 const appendBridgeLog = createCappedLogger(BRIDGE_LOG, 2000);
 
 function log(...args) {
@@ -1340,7 +1464,14 @@ async function segmentsToText(segments, options = {}) {
         out.push(replyText || '[引用消息]');
         break;
       }
-      case 'json': out.push('[卡片消息]'); break;
+      case 'json':
+      case 'xml':
+      case 'share':
+      case 'music':
+      case 'location':
+      case 'contact':
+        out.push(describeCardSegment(seg) || '[卡片消息]');
+        break;
       // markdown：SnowLuma 1.14.9 的线上段落是 `{type:'markdown',data:{content}}`。
       // 上游 1.14.17+（commit 1934e4e7「include text alongside received markdown」）
       // 起还会带上 `data.text`。两个形状都读，这样将来升级 SnowLuma 运行时不会退化成
@@ -1670,6 +1801,26 @@ async function main() {
       try { stat = fs.statSync(f); } catch {}
       return { name: path.relative(dir, f).split(path.sep).join('/'), bytes: stat?.size ?? 0, mtimeMs: stat?.mtimeMs ?? 0 };
     });
+  }
+
+  // 固定语音存档名单（audio/preset-voices.json）：仅「未指定文案」时可发；指定文案必须现录。
+  function loadVoicePresetAllowlist() {
+    try {
+      const p = path.join(voiceCfg().dir, 'preset-voices.json');
+      if (!fs.existsSync(p)) return [];
+      const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+      const list = Array.isArray(raw?.presets) ? raw.presets : [];
+      return list
+        .filter((x) => x && x.okForUnspecifiedSpeak !== false && typeof x.name === 'string' && x.name.trim())
+        .map((x) => ({
+          name: String(x.name).trim(),
+          text: String(x.text || '内容未知').slice(0, 200),
+          description: String(x.description || x.desc || '').slice(0, 300),
+          tags: Array.isArray(x.tags) ? x.tags.map((t) => String(t).slice(0, 40)).filter(Boolean).slice(0, 8) : []
+        }));
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -2157,6 +2308,29 @@ async function main() {
       if (face?.buffer) file = 'base64://' + face.buffer.toString('base64');
     }
     if (!file) throw new Error('无法获取该表情的图片源');
+    // QQ add_custom_face 对大体积动图易拒；超限时先压到 maxCollectBytes，压不动则跳过收藏（不拖垮整条消息链路）。
+    {
+      const rawB64 = file.startsWith('base64://') ? file.slice('base64://'.length) : '';
+      const rawBuf = rawB64 ? Buffer.from(rawB64, 'base64') : null;
+      if (rawBuf?.length) {
+        const maxCollectBytes = Math.max(
+          256 * 1024,
+          Number(cfg.socialV2?.sticker?.collect?.maxCollectBytes) || COLLECT_DEFAULTS.maxCollectBytes
+        );
+        const compressed = await compressImageForCollect(rawBuf, media?.mime || media?.mimeType || '', {
+          maxCollectBytes,
+          ffmpegPath: process.env.FFMPEG_PATH || cfg.socialV2?.voice?.ffmpegPath || null
+        });
+        if (!compressed.ok) {
+          log(`[sticker] 收藏跳过：${compressed.error || '压缩失败'}`);
+          throw new Error(compressed.error || '图片过大且压缩失败，已跳过收藏');
+        }
+        if (compressed.compressed) {
+          log(`[sticker] ${compressed.note}`);
+          file = 'base64://' + compressed.buffer.toString('base64');
+        }
+      }
+    }
     assertSendAllowed();
     const addRes = await bot.request('add_custom_face', { file });
     if (!addRes || addRes.status !== 'ok' || addRes.retcode !== 0) {
@@ -2215,6 +2389,9 @@ async function main() {
     if (slangLearnerSessionId) {
       learnerSessions.add(slangLearnerSessionId);
       api.events.follow(slangLearnerSessionId);
+      try { await applyLearnerSessionTitle(slangLearnerSessionId); } catch (error) {
+        log(`黑话学习会话命名失败: ${error?.message ?? error}`);
+      }
       return slangLearnerSessionId;
     }
     if (saved?.sessionId && saved.preset === preset && saved.scope === learnerScope) {
@@ -2222,6 +2399,9 @@ async function main() {
       learnerSessions.add(slangLearnerSessionId);
       api.events.follow(slangLearnerSessionId);
       await ensureChatModel(slangLearnerSessionId);
+      try { await applyLearnerSessionTitle(slangLearnerSessionId); } catch (error) {
+        log(`黑话学习会话命名失败: ${error?.message ?? error}`);
+      }
       return slangLearnerSessionId;
     }
     const dir = path.join(STATE_DIR, 'slang-agent');
@@ -2235,12 +2415,16 @@ async function main() {
     params.agentPreset = preset;
     const value = unwrap(await api.sessions.create(params), 'slang session.create');
     slangLearnerSessionId = value.sessionId;
+    const slangCreatedAt = extractSessionCreatedAt(value);
     learnerSessions.add(slangLearnerSessionId);
     api.events.follow(slangLearnerSessionId);
     await ensureChatModel(slangLearnerSessionId);
     fs.mkdirSync(STATE_DIR, { recursive: true });
     atomicWriteJson(SLANG_SESSION_FILE, { sessionId: slangLearnerSessionId, preset, scope: learnerScope });
     log(`黑话学习会话已创建：${slangLearnerSessionId}`);
+    try { await applyLearnerSessionTitle(slangLearnerSessionId, { createdAt: slangCreatedAt }); } catch (error) {
+      log(`黑话学习会话命名失败: ${error?.message ?? error}`);
+    }
     return slangLearnerSessionId;
   }
 
@@ -2477,9 +2661,11 @@ async function main() {
   }
 
   function withSlangContext(promptText, currentKey = '') {
+    // 缓存友好：稳定内容（黑话表 + 正文）在前；【当前时间】每轮都变，必须放最末尾，
+    // 避免打穿前缀缓存。唤醒路径的【本次消息快照】已含 now，时间感块也有本地钟点。
     const now = new Date();
     const timeLine = `【当前时间】${now.toLocaleString('zh-CN', { hour12: false })}（${Intl.DateTimeFormat().resolvedOptions().timeZone}）`;
-    const parts = [timeLine];
+    const parts = [];
     if (currentMode === 'closed-agent' && currentKey === `private:${String(cfg.ownerQQ ?? '')}`) {
       const st = getSocialV2State(currentKey);
       parts.push(`【私聊媒体工具】key="${currentKey}"；【会话令牌】${st.agentToken}。查看或发送收藏表情时必须带上此 key 和 token；仅限当前管理员私聊。`);
@@ -2488,7 +2674,9 @@ async function main() {
       const block = buildSlangContext(slangEntries, cfg.slang?.injectMax ?? 8, currentKey);
       if (block) parts.push(block);
     }
-    return parts.join('\n\n') + '\n\n' + promptText;
+    parts.push(promptText);
+    parts.push(timeLine);
+    return parts.join('\n\n');
   }
 
   if (!cfg.allow.private.length && !cfg.allow.groups.length && cfg.allowAllWhenEmpty) {
@@ -2569,6 +2757,332 @@ async function main() {
   const reverse = new Map(); // sessionId -> conv key
   for (const [key, sessionId] of Object.entries(state.sessions)) reverse.set(sessionId, key);
   // 持久化会话要等当前模式/preset 校验后才 follow；activate 会恢复其待办任务。
+
+  // DSH sidebar titles: "\u7fa4 \u00b7 {name} \u00b7 MM-DD" / "\u79c1\u804a \u00b7 {name} \u00b7 MM-DD"
+  // instead of the first injected prompt. Rename must never fail session creation.
+  const CHAT_NAME_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+  const CHAT_LIST_CACHE_TTL_MS = 10 * 60 * 1000;
+  const chatNameCache = new Map(); // key -> { name, ts }
+  const sessionCreatedAtCache = new Map(); // sessionId -> ms
+  const sessionTitleApplied = new Map(); // sessionId -> title last applied
+  const pendingTitleNameRetry = new Set(); // keys that used numeric id fallback
+  let friendListCachedAt = 0;
+  let groupListCachedAt = 0;
+  let sessionTitleSyncing = false;
+
+  (function loadPersistedChatTitles() {
+    const saved = readJsonSafe(CHAT_TITLE_CACHE_FILE, null);
+    if (!saved || typeof saved !== 'object') return;
+    if (saved.names && typeof saved.names === 'object') {
+      const now = Date.now();
+      for (const [key, name] of Object.entries(saved.names)) {
+        const clean = visibleTitleName(name);
+        if (canonicalV2Key(key) && clean) chatNameCache.set(canonicalV2Key(key), { name: clean, ts: now });
+      }
+    }
+    if (saved.createdAt && typeof saved.createdAt === 'object') {
+      for (const [sid, raw] of Object.entries(saved.createdAt)) {
+        const t = coerceTimestamp(raw);
+        if (sid && t) sessionCreatedAtCache.set(String(sid), t);
+      }
+    }
+  })();
+
+  function persistChatTitleCache() {
+    try {
+      const names = {};
+      for (const [key, val] of chatNameCache) {
+        if (val?.name) names[key] = val.name;
+      }
+      const createdAt = {};
+      for (const [sid, ms] of sessionCreatedAtCache) createdAt[sid] = ms;
+      atomicWriteJson(CHAT_TITLE_CACHE_FILE, { names, createdAt });
+    } catch (error) {
+      log(`\u4fdd\u5b58\u4f1a\u8bdd\u6807\u9898\u7f13\u5b58\u5931\u8d25: ${error?.message ?? error}`);
+    }
+  }
+
+  function pickOnebotData(body) {
+    if (body == null) return null;
+    if (Array.isArray(body)) return body;
+    if (typeof body === 'object') {
+      if (Array.isArray(body.data)) return body.data;
+      if (body.data != null) return body.data;
+    }
+    return body;
+  }
+
+  function rememberChatName(key, name) {
+    const canonical = canonicalV2Key(key);
+    const clean = visibleTitleName(name);
+    if (!canonical || !clean) return;
+    chatNameCache.set(canonical, { name: clean, ts: Date.now() });
+  }
+
+  async function refreshGroupListCache() {
+    if (groupListCachedAt && Date.now() - groupListCachedAt < CHAT_LIST_CACHE_TTL_MS) return;
+    try {
+      const body = await onebotHttpAction('get_group_list', {});
+      const list = pickOnebotData(body);
+      const arr = Array.isArray(list) ? list : [];
+      for (const g of arr) {
+        const id = g?.group_id ?? g?.groupId;
+        const name = g?.group_name ?? g?.groupName ?? g?.name;
+        if (id != null && name) rememberChatName(`group:${id}`, name);
+      }
+      groupListCachedAt = Date.now();
+    } catch (error) {
+      log(`\u83b7\u53d6\u7fa4\u5217\u8868\u5931\u8d25\uff08\u4f1a\u8bdd\u6807\u9898\u5c06\u56de\u9000\u5230\u7fa4\u53f7\uff09: ${error?.message ?? error}`);
+    }
+  }
+
+  async function refreshFriendListCache() {
+    if (friendListCachedAt && Date.now() - friendListCachedAt < CHAT_LIST_CACHE_TTL_MS) return;
+    try {
+      const body = await onebotHttpAction('get_friend_list', {});
+      const list = pickOnebotData(body);
+      const arr = Array.isArray(list) ? list : [];
+      for (const f of arr) {
+        const id = f?.user_id ?? f?.userId;
+        const remark = visibleTitleName(f?.remark);
+        const nick = visibleTitleName(f?.nickname ?? f?.nick ?? f?.name);
+        const name = remark || nick;
+        if (id != null && name) rememberChatName(`private:${id}`, name);
+      }
+      friendListCachedAt = Date.now();
+    } catch (error) {
+      log(`\u83b7\u53d6\u597d\u53cb\u5217\u8868\u5931\u8d25\uff08\u4f1a\u8bdd\u6807\u9898\u5c06\u5c1d\u8bd5\u964c\u751f\u4eba\u6635\u79f0\u6216 QQ \u53f7\uff09: ${error?.message ?? error}`);
+    }
+  }
+
+  async function resolveQqChatName(key) {
+    const canonical = canonicalV2Key(key);
+    if (!canonical) return null;
+    const hit = chatNameCache.get(canonical);
+    const cachedName = hit?.name ? visibleTitleName(hit.name) : '';
+    if (cachedName && Date.now() - hit.ts < CHAT_NAME_CACHE_TTL_MS) return cachedName;
+    if (hit && !cachedName) chatNameCache.delete(canonical);
+    const [kind, idStr] = canonical.split(':');
+    const id = Number(idStr);
+    try {
+      if (kind === 'group') {
+        try {
+          const body = await onebotHttpAction('get_group_info', { group_id: id });
+          const data = pickOnebotData(body);
+          const name = visibleTitleName(data?.group_name ?? data?.groupName ?? data?.name);
+          if (name) {
+            rememberChatName(canonical, name);
+            return name;
+          }
+        } catch {}
+        await refreshGroupListCache();
+        return chatNameCache.get(canonical)?.name ?? null;
+      }
+      await refreshFriendListCache();
+      if (chatNameCache.get(canonical)?.name) return chatNameCache.get(canonical).name;
+      try {
+        const body = await onebotHttpAction('get_stranger_info', { user_id: id });
+        const data = pickOnebotData(body);
+        const name = visibleTitleName(data?.remark) || visibleTitleName(data?.nickname || data?.nick || data?.name);
+        if (name) {
+          rememberChatName(canonical, name);
+          return name;
+        }
+      } catch {}
+      return chatNameCache.get(canonical)?.name ?? null;
+    } catch (error) {
+      log(`\u67e5\u8be2\u4f1a\u8bdd\u540d\u79f0\u5931\u8d25 ${canonical}: ${error?.message ?? error}`);
+      return chatNameCache.get(canonical)?.name ?? null;
+    }
+  }
+
+  function socialV2ActivityMs(key) {
+    try {
+      const st = socialV2?.conversations?.get(canonicalV2Key(key) || key);
+      if (!st) return null;
+      const times = [
+        st.lastIncomingAt, st.lastAiReplyAt, st.lastActionAt,
+        st.wakeConfig?.lastWakeAt, st.wakeConfig?.confirmedAt
+      ];
+      if (Array.isArray(st.recentMessages)) {
+        for (const m of st.recentMessages) times.push(m?.time);
+      }
+      const nums = times.map(coerceTimestamp).filter(Boolean);
+      return nums.length ? Math.max(...nums) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function fileMtimeMs(file) {
+    try {
+      const st = fs.statSync(file);
+      const t = Number(st.mtimeMs ?? st.mtime?.getTime?.());
+      return Number.isFinite(t) && t > 0 ? t : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveSessionDateMs(sessionId, key, hintedAt) {
+    const hint = coerceTimestamp(hintedAt);
+    if (hint) {
+      if (sessionId) sessionCreatedAtCache.set(String(sessionId), hint);
+      return hint;
+    }
+    if (sessionId && sessionCreatedAtCache.has(String(sessionId))) {
+      return sessionCreatedAtCache.get(String(sessionId));
+    }
+    const activity = key ? socialV2ActivityMs(key) : null;
+    if (activity) {
+      if (sessionId) sessionCreatedAtCache.set(String(sessionId), activity);
+      return activity;
+    }
+    const file = key ? STATE_FILE : SLANG_SESSION_FILE;
+    const mtime = fileMtimeMs(file) || Date.now();
+    if (sessionId) sessionCreatedAtCache.set(String(sessionId), mtime);
+    return mtime;
+  }
+
+  async function listDshSessionsSafe() {
+    try {
+      const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+      const items = list?.items ?? list?.sessions ?? (Array.isArray(list) ? list : []);
+      const map = new Map();
+      for (const item of items ?? []) {
+        const sid = item?.sessionId || item?.id;
+        if (!sid) continue;
+        map.set(String(sid), item);
+        const created = extractSessionCreatedAt(item);
+        if (created) sessionCreatedAtCache.set(String(sid), created);
+      }
+      return map;
+    } catch (error) {
+      log(`\u5217 DSH \u4f1a\u8bdd\u5931\u8d25\uff08\u5c06\u8df3\u8fc7\u5df2\u6709\u6807\u9898\u5bf9\u7167\uff09: ${error?.message ?? error}`);
+      return new Map();
+    }
+  }
+
+  function currentTitleOf(item) {
+    if (!item || typeof item !== 'object') return '';
+    return collapseTitleText(item.title || item.name || item.sessionTitle || item.session?.title || '');
+  }
+
+  function isListedSessionLive(item) {
+    if (!item) return true;
+    const status = String(item.status ?? item.state ?? '').toLowerCase();
+    if (item.archived === true || item.archivedAt || status === 'archived' || status === 'deleted') return false;
+    return true;
+  }
+
+  async function renameDshSession(sessionId, title) {
+    const sid = String(sessionId ?? '');
+    const next = collapseTitleText(title);
+    if (!sid || !next) return false;
+    if (sessionTitleApplied.get(sid) === next) return true;
+    try {
+      if (typeof api.sessions?.rename === 'function') {
+        unwrap(await withTimeout(api.sessions.rename({ sessionId: sid, title: next }), DSH_CONTROL_TIMEOUT_MS, 'session.rename'), 'session.rename');
+      } else {
+        unwrap(await withTimeout(api.callUnary('session/rename', { sessionId: sid, title: next }), DSH_CONTROL_TIMEOUT_MS, 'session.rename'), 'session.rename');
+      }
+      sessionTitleApplied.set(sid, next);
+      return true;
+    } catch (error) {
+      const msg = String(error?.message ?? error);
+      if (/not[- ]?found|archived|unknown session/i.test(msg)) {
+        log(`\u4f1a\u8bdd\u6539\u540d\u8df3\u8fc7\uff08\u5df2\u5f52\u6863\u6216\u4e0d\u5b58\u5728\uff09 ${sid}`);
+        return false;
+      }
+      log(`\u4f1a\u8bdd\u6539\u540d\u5931\u8d25 ${sid} \u2192 ${next}: ${msg}`);
+      return false;
+    }
+  }
+
+  async function applyMappedSessionTitle(key, sessionId, { createdAt = null, listed = null } = {}) {
+    const canonical = canonicalV2Key(key);
+    if (!canonical || !sessionId) return null;
+    const [kind, id] = canonical.split(':');
+    const name = await resolveQqChatName(canonical);
+    if (!name) pendingTitleNameRetry.add(canonical);
+    else pendingTitleNameRetry.delete(canonical);
+    const dateMs = resolveSessionDateMs(sessionId, canonical, createdAt || extractSessionCreatedAt(listed));
+    const title = buildQqSessionTitle({ kind, name, id, dateMs });
+    const prev = currentTitleOf(listed);
+    if (prev && prev === title) {
+      sessionTitleApplied.set(String(sessionId), title);
+      return title;
+    }
+    const ok = await renameDshSession(sessionId, title);
+    if (ok) log(`\u4f1a\u8bdd\u5df2\u547d\u540d ${canonical}: ${prev ? `${prev} \u2192 ` : ''}${title}`);
+    return ok ? title : null;
+  }
+
+  async function applyLearnerSessionTitle(sessionId, { createdAt = null, listed = null } = {}) {
+    if (!sessionId) return null;
+    const dateMs = resolveSessionDateMs(sessionId, null, createdAt || extractSessionCreatedAt(listed));
+    const title = buildLearnerSessionTitle(dateMs);
+    const prev = currentTitleOf(listed);
+    if (prev && prev === title) {
+      sessionTitleApplied.set(String(sessionId), title);
+      return title;
+    }
+    const ok = await renameDshSession(sessionId, title);
+    if (ok) log(`\u9ed1\u8bdd\u5b66\u4e60\u4f1a\u8bdd\u5df2\u547d\u540d: ${prev ? `${prev} \u2192 ` : ''}${title}`);
+    return ok ? title : null;
+  }
+
+  async function syncExistingSessionTitles() {
+    if (sessionTitleSyncing) return;
+    sessionTitleSyncing = true;
+    try {
+      const listed = await listDshSessionsSafe();
+      for (const [key, sessionId] of Object.entries(state.sessions)) {
+        const item = listed.get(String(sessionId));
+        if (listed.size > 0 && !item) continue;
+        if (item && !isListedSessionLive(item)) continue;
+        try {
+          await applyMappedSessionTitle(key, sessionId, { listed: item });
+        } catch (error) {
+          log(`\u4f1a\u8bdd\u6539\u540d\u5f02\u5e38 ${key}: ${error?.message ?? error}`);
+        }
+      }
+      const learnerId = slangLearnerSessionId || readJsonSafe(SLANG_SESSION_FILE, null)?.sessionId;
+      if (learnerId) {
+        const item = listed.get(String(learnerId));
+        if (!(listed.size > 0 && !item) && (!item || isListedSessionLive(item))) {
+          try { await applyLearnerSessionTitle(learnerId, { listed: item }); }
+          catch (error) { log(`\u9ed1\u8bdd\u5b66\u4e60\u4f1a\u8bdd\u6539\u540d\u5f02\u5e38: ${error?.message ?? error}`); }
+        }
+      }
+      persistChatTitleCache();
+    } finally {
+      sessionTitleSyncing = false;
+    }
+  }
+
+  async function retryFallbackSessionTitles() {
+    if (!pendingTitleNameRetry.size) return;
+    const keys = [...pendingTitleNameRetry];
+    for (const key of keys) {
+      const sessionId = state.sessions[key];
+      if (!sessionId) {
+        pendingTitleNameRetry.delete(key);
+        continue;
+      }
+      const prev = chatNameCache.get(key);
+      if (prev) chatNameCache.delete(key); // force a fresh OneBot lookup
+      const name = await resolveQqChatName(key);
+      if (!name) {
+        if (prev) chatNameCache.set(key, prev);
+        continue;
+      }
+      pendingTitleNameRetry.delete(key);
+      try { await applyMappedSessionTitle(key, sessionId); }
+      catch (error) { log(`\u4f1a\u8bdd\u8865\u540d\u5f02\u5e38 ${key}: ${error?.message ?? error}`); }
+    }
+    persistChatTitleCache();
+  }
   const sessionPromises = new Map(); // key -> create promise（防并发重复创建）
   const promptQueues = new Map(); // key -> { queue: [], running: false }：每个 QQ 会话串行投递 DSH prompt，保证 turn 顺序
 
@@ -3392,6 +3906,7 @@ async function main() {
         try { await flushQueue(); } catch (error) { log('补投队列异常:', error?.message ?? error); }
         // DSH 恢复后，把离线期间攒下的黑话学习窗口补触发
         for (const key of [...slangWindows.keys()]) maybeQueueSlangExtraction(key);
+        void syncExistingSessionTitles().catch((error) => log(`启动时同步会话标题失败: ${error?.message ?? error}`));
       } else if (currentMode !== lastMode) {
         if (lastMode === 'reserved' && currentMode !== 'reserved') {
           cleanupSocialForModeChange();
@@ -5042,7 +5557,7 @@ async function main() {
             if (body.sticker.collect && typeof body.sticker.collect === 'object') {
               merged.sticker.collect = { ...(current.sticker?.collect ?? {}), ...body.sticker.collect };
               if (merged.sticker.collect.enabled !== undefined) merged.sticker.collect.enabled = merged.sticker.collect.enabled === true;
-              for (const k of ['maxPerMinute', 'maxPerHour', 'maxRemarkChars']) {
+              for (const k of ['maxPerMinute', 'maxPerHour', 'maxRemarkChars', 'maxCollectBytes']) {
                 if (merged.sticker.collect[k] !== undefined) {
                   const n = Number(merged.sticker.collect[k]);
                   merged.sticker.collect[k] = Number.isFinite(n) ? Math.max(0, Math.round(n)) : current.sticker?.collect?.[k] ?? 0;
@@ -5271,8 +5786,10 @@ async function main() {
               enabled: true,
               total: voiceLibrary().length,
               names: voiceLibrary().slice(0, 12).map((v) => v.name),
+              presetAllowlist: loadVoicePresetAllowlist().map((p) => p.name),
+              presetNotes: loadVoicePresetAllowlist().map((p) => ({ name: p.name, text: p.text || '内容未知', description: p.description || '', tags: p.tags || [] })),
               maxSeconds: voiceCfg().maxSeconds,
-              hint: '可用 qq_list_voices 查看语音库，再用 qq_send_voice 把其中一个当语音发出去'
+              hint: '未指定文案：仅可用 voices.presetAllowlist / presetNotes 里的固定存档 qq_send_voice，按 description/tags 选最贴场景的一条。指定文案：必须 tts_speak 成功拿 qqVoiceName 再发；TTS/Breeze 失败禁止用旧文件凑数，只文字说走不通。只本机播放对方听不到。'
             }
           });
           return;
@@ -5296,7 +5813,7 @@ async function main() {
           const messages = afterSeq === null ? st.unread.slice(-limit)
             : st.unread.filter((m) => Number.isSafeInteger(m.seq) && m.seq > afterSeq).slice(0, limit);
           const readThroughSeq = req.headers['x-agent-token'] ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
-          sendJson({ ok: true, key, unreadCount: st.unread.length, messages, readThroughSeq });
+          sendJson({ ok: true, key, unreadCount: st.unread.length, messages, readThroughSeq, ...(collectionLooksLikeVisionMedia(messages) ? { visionHint: VISION_TOOL_HINT } : {}) });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/recent') {
@@ -6468,17 +6985,27 @@ async function main() {
               }
               items.push(entry);
             }
+            const presetMeta = Object.fromEntries(loadVoicePresetAllowlist().map((p) => [p.name, p]));
+            for (const entry of items) {
+              const meta = presetMeta[entry.name];
+              if (!meta) continue;
+              entry.preset = true;
+              entry.text = meta.text || '';
+              entry.description = meta.description || '';
+              entry.tags = meta.tags || [];
+            }
             sendJson({
               ok: true,
               key: key || null,
               dir: agentCall ? undefined : voice.dir,
               count: items.length,
               voices: items,
+              presets: loadVoicePresetAllowlist(),
               limits: { maxSeconds: voice.maxSeconds, maxBytes: voice.maxBytes, maxPerMinute: voice.maxPerMinute, maxPerHour: voice.maxPerHour },
               // ⚠️ 提示语里也不能出现绝对路径：AI 通道下同样要脱敏（dir 字段已经抑制了，
               // 但这里的模板字符串曾无条件插值 voice.dir —— 等于从旁边的字段又漏出去一次）。
               hint: items.length
-                ? '用 qq_send_voice 传 name 即可把其中一个当语音发出去'
+                ? '未指定文案时只能发 preset-voices.json / voices.presets 中的固定存档（看 description/tags 选场景）；指定文案须 tts_speak 成功后再发对应 qqVoiceName，失败禁止拿旧文件凑数'
                 : (agentCall ? '语音库为空：请让管理员先把音频放进语音库' : `语音库为空：把音频文件放进 ${voice.dir} 后重试`)
             });
           } catch (error) {
@@ -6812,6 +7339,7 @@ async function main() {
                 : '现在可以直接收尾：qq_mark_read(throughSeq=已读水位) 或 qq_set_wake_config(throughSeq=已读水位, config=…)。不用再等一轮。'
             } : {}),
             newMessages,
+            ...(collectionLooksLikeVisionMedia(newMessages) ? { visionHint: VISION_TOOL_HINT } : {}),
             readThroughSeq,
             unreadCount: st.unread.length
           });
@@ -8246,7 +8774,7 @@ async function main() {
   //      动图在桥接侧抽帧拼图后，信息量反而更高（实测 4.83MB/200 帧 → 92KB/269ms）。
   //
   // 上限默认值见 media-normalize.js 的 MEDIA_DEFAULTS；config.json 的 socialV2.media 可覆盖。
-  // ⚠️ 只用于**喂模型**的出口。collectStickerV2 走 fetchOneBotImage 的原始字节，不能经过这里，
+  // ⚠️ 只用于**喂模型**的出口。collectStickerV2 自己在上传前走 compressImageForCollect，不能经过这里，
   //    否则收藏下来的表情会变成拼图/降采样版本。
   const modelMediaLimits = (() => {
     const m = cfg.socialV2?.media ?? {};
@@ -8836,6 +9364,7 @@ async function main() {
       const dir = cfg.sessionCwd ? String(cfg.sessionCwd) : path.join(STATE_DIR, 'agents');
       fs.mkdirSync(dir, { recursive: true });
       let sessionId;
+      let sessionCreatedAt = null;
       let lastError = null;
       const preset = modePreset(key, currentMode, cfg);
       // 非 closed-agent（chat / reserved / reserved2，会话可能属于 QQ 群）必须 fail-closed：
@@ -8866,6 +9395,7 @@ async function main() {
           if (boundSessionId) params.sessionId = boundSessionId;
           const value = unwrap(await api.sessions.create(params), 'session.create');
           sessionId = value.sessionId;
+          sessionCreatedAt = extractSessionCreatedAt(value);
           if (withPreset && preset) {
             log(`会话 ${key} 已挂载 preset ${preset}`);
           } else if (preset) {
@@ -8897,6 +9427,9 @@ async function main() {
         throw new Error('会话创建期间已重置或权限已变化');
       }
       log(`新会话 ${key} -> ${sessionId}（模式 ${currentMode}，preset: ${modePreset(key, currentMode, cfg) ?? '默认'}）`);
+      try { await applyMappedSessionTitle(key, sessionId, { createdAt: sessionCreatedAt }); } catch (error) {
+        log(`新会话命名失败 ${key}: ${error?.message ?? error}`);
+      }
       return sessionId;
     })();
     sessionPromises.set(key, promise);
@@ -9915,7 +10448,13 @@ async function main() {
       promptText = buildWakePromptV2(key, opts.wakeReason);
       wakeSnapshot = buildWakeSnapshotV2(key);
       if (wakeSnapshot) {
-        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
+        promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}`;
+        // Place the hint after the snapshot JSON and before withSlangContext appends 【当前时间】.
+        // Keep it out of the JSON so it does not compete with wakeMaxChars.
+        if (collectionLooksLikeVisionMedia(wakeSnapshot.messages)) {
+          promptText += `\n${VISION_TOOL_HINT}`;
+        }
+        promptText += `\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
       }
     }
     let content = [{ type: 'text', text: withSlangContext(promptText, key) }];
@@ -12864,6 +13403,7 @@ async function main() {
     // 连接成功后顺手确认一下 token 是否已跟当前账号对齐；不一致就写回 config.json，
     // 让 MCP 工具（另一个进程）也能拿到正确的 token。
     void syncTokenToFile();
+    void retryFallbackSessionTitles().catch((error) => log(`会话补名失败: ${error?.message ?? error}`));
   });
 
   /**
