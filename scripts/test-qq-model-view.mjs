@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { compactModelMessage, compactModelData, serializeModelData, sanitizeUntrustedText } from '../src/qq-model-view.js';
+import { compactModelMessage, compactModelData, serializeModelData, sanitizeUntrustedText, VISION_TOOL_HINT, messageLooksLikeVisionMedia, collectionLooksLikeVisionMedia } from '../src/qq-model-view.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const shortMessage = {
@@ -288,4 +288,17 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
       await fs.rm(resolved, { recursive: true, force: true });
     }
   }
+});
+
+test('vision tool hint triggers on unread media, placeholder text, and animated stickers', () => {
+  assert.equal(messageLooksLikeVisionMedia({ hasMedia: true, text: '[图片]' }), true);
+  assert.equal(messageLooksLikeVisionMedia({ text: 'hello' }), false);
+  assert.equal(messageLooksLikeVisionMedia({ text: '[动画表情]' }), true);
+  assert.equal(messageLooksLikeVisionMedia({ media: [{ kind: 'image', summary: '[动画表情]', subType: 1 }] }), true);
+  assert.equal(collectionLooksLikeVisionMedia([{ text: 'hi' }, { hasMedia: true, text: '[图片]' }]), true);
+  assert.equal(collectionLooksLikeVisionMedia([{ text: 'hi' }]), false);
+  assert.equal(VISION_TOOL_HINT.includes('qq_get_message_images'), true);
+  assert.equal(VISION_TOOL_HINT.includes('qq_get_sticker_image'), true);
+  assert.ok(VISION_TOOL_HINT.includes('当前模型支持看图'));
+  assert.ok(VISION_TOOL_HINT.length <= 220, 'hint must stay short because wakeMaxChars is tight');
 });

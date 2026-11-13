@@ -167,3 +167,34 @@ export function compactModelData(data, opts = {}) {
 export function serializeModelData(data, opts = {}) {
   return JSON.stringify(compactModelData(data, opts));
 }
+
+// reserved2 vision hint: inject only when unread / this-turn messages actually carry images.
+// The wake body otherwise has no tool name, so the model may treat the "[\u56fe\u7247]" placeholder
+// or an older "I cannot see" self-judgment as fact, or even describe the placeholder as a tool result.
+export const VISION_TOOL_HINT = "【看图】当前模型支持看图。带 hasMedia、[图片] 或动画表情的消息必须先调用 qq_get_message_images（动画表情也可 qq_get_sticker_image），根据工具返回的图像再回复。不能只凭「[图片]」占位或旧的「看不见」判断下结论，更不能把占位文字说成工具结果。";
+
+function mediaItemLooksLikeVision(item) {
+  if (!item || typeof item !== 'object') return false;
+  const kind = String(item.kind || item.type || '');
+  if (/image|picture|photo|sticker|face/i.test(kind)) return true;
+  if (Number(item.subType) === 1) return true;
+  return /\u56fe\u7247|\u52a8\u753b\u8868\u60c5|\u8868\u60c5/.test(String(item.summary || item.name || ''));
+}
+
+export function messageLooksLikeVisionMedia(message) {
+  if (!isRecord(message)) {
+    if (typeof message === 'string') return /\[\u56fe\u7247\]|\[\u52a8\u753b\u8868\u60c5\]/.test(message);
+    return false;
+  }
+  if (message.hasMedia === true) return true;
+  if (Array.isArray(message.media) && message.media.some(mediaItemLooksLikeVision)) return true;
+  const text = [message.text, message.plain, message.tail, message.summary]
+    .filter((v) => typeof v === 'string')
+    .join('\n');
+  return /\[\u56fe\u7247\]|\[\u52a8\u753b\u8868\u60c5\]/.test(text);
+}
+
+export function collectionLooksLikeVisionMedia(messages) {
+  if (!Array.isArray(messages)) return false;
+  return messages.some(messageLooksLikeVisionMedia);
+}

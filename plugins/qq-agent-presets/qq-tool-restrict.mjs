@@ -225,6 +225,14 @@ const SAFE_PREFIXES = [
 const SAFE_EXACT = new Set([
   'ask_user_question',
   'todo_write',
+  // 上下文压缩：模型侧 compress（billion-context / 压缩插件）。此前被白名单拦掉，
+  // 17 次调用全失败，长会话 cacheMiss 飙升。允许后仅压缩当前会话上下文，无本地执行面。
+  'compress',
+  // Breeze Blue TTS（@shfshanyue/dsh-breeze-blue-tts）
+  'tts_speak',
+  'tts_voices',
+  'tts_status',
+  'tts_play_builtin',
 ])
 
 // ── 诊断落盘：restrict 失败时到底为什么 ────────────────────────────────────

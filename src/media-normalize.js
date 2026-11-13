@@ -18,9 +18,9 @@
 //
 // ── 本模块的取舍
 //
-// · **只动喂给模型的那一份**。收集表情（add_custom_face）必须用原始字节，
-//   所以归一化只接在 fetchMediaData / resolveMediaList / sticker-image 这些「给模型看」的出口，
-//   不去改 fetchOneBotImage / fetchFaceMedia 的返回值。
+// · **只动喂给模型的那一份**。收藏表情另走 compressImageForCollect（压到 QQ 可收体积，仍尽量保动图），
+//   模型侧归一化只接在 fetchMediaData / resolveMediaList / sticker-image 这些「给模型看」的出口，
+//   不去改 fetchOneBotImage / fetchFaceMedia 的返回值；收藏压缩发生在 collectStickerV2 内、上传前。
 // · **动图抽帧拼图**而不是发多张图：一条消息 5 张图 = 5 次 DSH admission + 5 份 token，
 //   而 3×2 拼图信息密度更高、只算一张图（实测 4.83 MB / 200 帧 → 92 KB / 269 ms）。
 // · **能不动就不动**：小图（≤ maxModelBytes 且长边够小）原样放行，零延迟。
@@ -447,4 +447,137 @@ export function describeImage(buf) {
   const parts = [`${info.format} ${info.width}×${info.height}`, `${(buf.length / 1024).toFixed(0)}KB`];
   if (info.animated) parts.push(`动图 ${info.frames} 帧${info.durationMs ? `/${(info.durationMs / 1000).toFixed(1)}s` : ''}`);
   return parts.join(' ');
+}
+
+/** 收藏表情体积上限默认值（QQ add_custom_face 对大 GIF 易拒）。可被 socialV2.sticker.collect.maxCollectBytes 覆盖。 */
+export const COLLECT_DEFAULTS = Object.freeze({
+  maxCollectBytes: Math.floor(2.5 * 1024 * 1024),
+  maxLongEdge: 720,
+  timeoutMs: 30000
+});
+
+/**
+ * 收藏前压缩：保留动图/静态图形态，把体积压到 QQ 能收下的范围。
+ *
+ * 与 normalizeImageForModel 刻意分开：那边是「喂模型看」的抽帧拼图；
+ * 这里必须仍是可收藏的表情文件（优先保持 GIF 动图）。
+ *
+ * @returns {Promise<{ok:boolean, buffer?:Buffer, mimeType?:string, note?:string, error?:string, skipped?:boolean, compressed?:boolean}>}
+ */
+export async function compressImageForCollect(buf, mimeType, opts = {}) {
+  const bytes = Buffer.isBuffer(buf) ? buf.length : 0;
+  if (!bytes) return { ok: false, error: '图片字节为空', skipped: true };
+
+  const maxBytes = clampInt(
+    opts.maxCollectBytes,
+    256 * 1024,
+    8 * 1024 * 1024,
+    COLLECT_DEFAULTS.maxCollectBytes
+  );
+  const maxLongEdge = clampInt(opts.maxLongEdge, 240, 1600, COLLECT_DEFAULTS.maxLongEdge);
+  const timeoutMs = clampInt(opts.timeoutMs, 5000, 120000, COLLECT_DEFAULTS.timeoutMs);
+
+  if (bytes <= maxBytes) {
+    return {
+      ok: true,
+      buffer: buf,
+      mimeType: mimeType || 'application/octet-stream',
+      note: '',
+      compressed: false
+    };
+  }
+
+  const info = sniffImage(buf);
+  const ffmpeg = resolveFfmpeg({ ffmpegPath: opts.ffmpegPath ?? null });
+  if (!ffmpeg) {
+    return {
+      ok: false,
+      error: `图片 ${(bytes / 1024 / 1024).toFixed(2)}MB 超过收藏上限 ${(maxBytes / 1024 / 1024).toFixed(2)}MB，且找不到 ffmpeg，已跳过收藏`,
+      skipped: true
+    };
+  }
+
+  const dir = makeTempWorkspace(opts.tmpDir);
+  try {
+    const inExt = info?.format === 'jpeg' ? '.jpg' : (info?.format ? `.${info.format}` : '.bin');
+    const inFile = path.join(dir, `in${inExt}`);
+    fs.writeFileSync(inFile, buf);
+
+    const animated = !!(info?.animated);
+    let lastError = '';
+
+    if (animated || info?.format === 'gif' || info?.format === 'webp') {
+      const attempts = [
+        { edge: Math.min(maxLongEdge, Math.max(info?.width || maxLongEdge, info?.height || maxLongEdge)), fps: 12, colors: 192 },
+        { edge: Math.min(560, maxLongEdge), fps: 10, colors: 128 },
+        { edge: 420, fps: 8, colors: 96 },
+        { edge: 320, fps: 6, colors: 64 }
+      ];
+      for (let i = 0; i < attempts.length; i += 1) {
+        const a = attempts[i];
+        const edge = Math.max(160, a.edge);
+        const outFile = path.join(dir, `out-${i}.gif`);
+        const vf =
+          `fps=${a.fps},scale='min(${edge},iw)':-1:flags=lanczos,` +
+          `split[s0][s1];[s0]palettegen=max_colors=${a.colors}:stats_mode=diff[p];` +
+          `[s1][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle`;
+        const run = await runFfmpeg(ffmpeg, [
+          '-v', 'error', '-y', '-i', inFile,
+          '-filter_complex', vf,
+          '-loop', '0',
+          outFile
+        ], { timeoutMs });
+        if (!run.ok) { lastError = run.error; continue; }
+        const out = readIfExists(outFile);
+        if (out && out.length > 0 && out.length <= maxBytes) {
+          return {
+            ok: true,
+            buffer: out,
+            mimeType: 'image/gif',
+            note: `收藏压缩 ${(bytes / 1024 / 1024).toFixed(2)}MB → ${(out.length / 1024 / 1024).toFixed(2)}MB（边≈${edge} fps=${a.fps} 色=${a.colors}）`,
+            compressed: true
+          };
+        }
+        lastError = out ? `仍 ${(out.length / 1024 / 1024).toFixed(2)}MB` : '无输出';
+      }
+    } else {
+      const outExt = pickOutputExt(info || { alpha: false });
+      let edge = Math.min(maxLongEdge, Math.max(info?.width || maxLongEdge, info?.height || maxLongEdge));
+      const srcW = Math.max(2, info?.width || edge);
+      const srcH = Math.max(2, info?.height || edge);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const scale = Math.min(1, edge / Math.max(srcW, srcH));
+        const width = Math.max(2, Math.round(srcW * scale) & ~1);
+        const height = Math.max(2, Math.round(srcH * scale) & ~1);
+        const outFile = path.join(dir, `out-${attempt}${outExt}`);
+        const args = ['-v', 'error', '-y', '-i', inFile, '-vf', `scale=${width}:${height}:flags=lanczos`];
+        if (outExt === '.jpg') args.push('-q:v', String(3 + attempt * 3));
+        args.push(outFile);
+        const run = await runFfmpeg(ffmpeg, args, { timeoutMs });
+        if (!run.ok) { lastError = run.error; }
+        else {
+          const out = readIfExists(outFile);
+          if (out && out.length <= maxBytes) {
+            return {
+              ok: true,
+              buffer: out,
+              mimeType: outExt === '.jpg' ? 'image/jpeg' : 'image/png',
+              note: `收藏压缩 ${(bytes / 1024 / 1024).toFixed(2)}MB → ${(out.length / 1024).toFixed(0)}KB（${width}×${height}）`,
+              compressed: true
+            };
+          }
+          lastError = out ? `仍 ${(out.length / 1024 / 1024).toFixed(2)}MB` : '无输出';
+        }
+        edge = Math.max(240, Math.round(edge * 0.7));
+      }
+    }
+
+    return {
+      ok: false,
+      error: `图片 ${(bytes / 1024 / 1024).toFixed(2)}MB 压不到 ${(maxBytes / 1024 / 1024).toFixed(2)}MB 以内（${lastError || '未知'}），已跳过收藏`,
+      skipped: true
+    };
+  } finally {
+    cleanupWorkspace(dir);
+  }
 }
