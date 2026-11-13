@@ -5,11 +5,15 @@
 >
 > The upstream SnowLuma project has stopped public distribution, and its runtime is no longer available. Existing deployments may keep running until they become incompatible, but there will be no new-install support, compatibility updates, or security fixes. See [SUNSET.md](SUNSET.md) and the [archive announcement](https://github.com/Derpyu520/qq-bridge/issues/180).
 
-[中文](README.md) · [Setup guide](docs/guides/DSH_SETUP.md) · [Issues](https://github.com/Derpyu520/qq-bridge/issues)
+
+> [!NOTE]
+> **This repository is a public fork of [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge).** It applies local maintenance patches on official `v0.2.2-rc1`, published as `0.2.2-rc1-local`. The official sunset notice above still applies. See [Local patches](docs/guides/LOCAL_PATCHES.md) (Chinese) for what changed.
+
+[中文](README.md) · [Setup guide](docs/guides/DSH_SETUP.md) · [Local patches](docs/guides/LOCAL_PATCHES.md) · [Issues](https://github.com/buzuosheng/qq-bridge/issues)
 
 A local message bridge that forwards message events and AI replies between the **OneBot v11 interfaces provided by SnowLuma** and [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness).
 
-Current release candidate: `v0.2.2-rc1` (GitHub prerelease), targeting DSH `0.2.2-rc.1`.
+Current version: `v0.2.2-rc1-local` (based on official `v0.2.2-rc1`), targeting DSH `0.2.2-rc.1`. Local changes are listed in [Local patches](docs/guides/LOCAL_PATCHES.md).
 
 > [!IMPORTANT]
 > **qq-bridge is independently maintained. It is not a SnowLuma subproject and is not affiliated with SnowLuma, DeepSeek, or Tencent / QQ.**
@@ -43,7 +47,7 @@ Use **Windows 10 / 11 and Node.js ≥ 22.13** (≥24.9 when DSH 0.2.2 runs on th
 Run in PowerShell:
 
 ```powershell
-git clone https://github.com/Derpyu520/qq-bridge.git
+git clone https://github.com/buzuosheng/qq-bridge.git
 cd qq-bridge
 npm install
 Copy-Item config.example.json config.json

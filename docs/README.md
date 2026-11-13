@@ -28,6 +28,7 @@
 | 文档 | 内容 | 状态 |
 | --- | --- | --- |
 | [DSH 0.2.2 适配记录](guides/DSH_022_ADAPTATION.md) | DSH 0.2.2-rc.1 适配证据、思考强度、会话恢复权限与 Node 24 基线 | ✅ 2026-11-05 实测 / 11-06 分支复查，对应 `v0.2.2-rc1` |
+| [本地维护补丁](guides/LOCAL_PATCHES.md) | 本 fork 相对官方 `v0.2.2-rc1` 的改动：卡片解析、看图提醒、会话标题等，版本 `0.2.2-rc1-local` | ✅ 2026-11-13 |
 | [2026-10-31 仓库体检](guides/AUDIT_2026-10-31.md) | 会话资料隔离、发送撤权、网络与路径边界、依赖和历史隐私扫描 | 🗄️ 2026-10-31 |
 | [2026-10-31 issues 核查](guides/ISSUE_STATUS_2026-10-31.md) | 当时未关闭 issues 的逐项结论、验证范围与未复现事项 | 🗄️ 2026-10-31 |
 | [2026-10-31 Code scanning 核查](guides/CODE_SCANNING_2026-10-31.md) | 当时 14 条告警的风险判断、修复与复扫边界 | 🗄️ 2026-10-31 |
@@ -61,5 +62,6 @@
 | 修改控制台并运行离线回归 | [控制台测试指南](guides/CONSOLE-UI-TESTING.md) |
 | 修改安全相关代码 | [安全基线](guides/SECURITY_BASELINE.md) |
 | 核查 DSH 版本适配 | [0.2.2 适配记录](guides/DSH_022_ADAPTATION.md) |
+| 查看本 fork 相对官方的改动 | [本地维护补丁](guides/LOCAL_PATCHES.md) |
 | 查找目录或脚本用途 | [FOLDER_MAP](FOLDER_MAP.md) |
 | 报告安全问题 | [安全策略](../SECURITY.md) |

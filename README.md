@@ -5,11 +5,15 @@
 >
 > 上游 SnowLuma 已停止公开服务，相关运行时不再提供；本项目无法继续维护。现有部署可能继续运行至不兼容为止，但不再提供新安装支持、兼容性适配或安全更新。详见 [SUNSET.md](SUNSET.md) 与 [归档公告](https://github.com/Derpyu520/qq-bridge/issues/180)。
 
-[English](README.en.md) · [安装指南](docs/guides/DSH_SETUP.md) · [问题反馈](https://github.com/Derpyu520/qq-bridge/issues)
+
+> [!NOTE]
+> **本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的公开 fork**，在官方 `v0.2.2-rc1` 上合入了本地维护补丁，版本为 `0.2.2-rc1-local`。上方官方停更说明仍然适用。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)。
+
+[English](README.en.md) · [安装指南](docs/guides/DSH_SETUP.md) · [本地维护补丁](docs/guides/LOCAL_PATCHES.md) · [问题反馈](https://github.com/buzuosheng/qq-bridge/issues)
 
 qq-bridge 是一个本地消息桥接工具，在 SnowLuma 提供的 **OneBot v11 接口**与 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 之间转发消息事件和 AI 回复。
 
-当前候选版本：`v0.2.2-rc1`（GitHub prerelease），适配目标为 DSH `0.2.2-rc.1`。
+当前版本：`v0.2.2-rc1-local`（基于官方 `v0.2.2-rc1`），适配目标为 DSH `0.2.2-rc.1`。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)。
 
 > [!IMPORTANT]
 > **qq-bridge 是独立维护的第三方工具，不是 SnowLuma 的子项目，也不隶属于 SnowLuma、DeepSeek 或腾讯 / QQ。**
@@ -43,7 +47,7 @@ QQ ↔ SnowLuma ↔ qq-bridge ↔ DeepSeek Harness ↔ 模型服务
 在 PowerShell 中运行：
 
 ```powershell
-git clone https://github.com/Derpyu520/qq-bridge.git
+git clone https://github.com/buzuosheng/qq-bridge.git
 cd qq-bridge
 npm install
 Copy-Item config.example.json config.json
