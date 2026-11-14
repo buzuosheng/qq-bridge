@@ -4,6 +4,18 @@
 
 对照官方 `v0.2.2-rc1` 的代码差异：<https://github.com/Derpyu520/qq-bridge/compare/v0.2.2-rc1...buzuosheng:qq-bridge:main>。
 
+## [0.2.2-rc2-local] - 2026-11-14
+
+在 `0.2.2-rc1-local` 上补回现网 0.2.1-r7 的 1301 敏感内容退役会话逻辑，并与官方 `reportTurnFailure` 并存。
+
+### 新增
+
+- 遇到 z.ai 1301 / 敏感内容类错误时，清空该会话未读与近期窗口，退役本地 DSH 会话映射，下次唤醒重建干净上下文，并且不往 QQ 刷提示。其他回合出错或中止仍走官方 `reportTurnFailure`：reserved2 不刷屏，其他模式 5 分钟内最多提醒一次。
+
+### 文档
+
+- 更新 [本地维护补丁](docs/guides/LOCAL_PATCHES.md) 与 README 短列表，说明 1301 退役逻辑已纳入并与官方失败上报并存。
+
 ## [0.2.2-rc1-local] - 2026-11-13
 
 基于官方 `v0.2.2-rc1`（`781e02f`）合入本地维护补丁。许可仍为 PolyForm Noncommercial 1.0.0。

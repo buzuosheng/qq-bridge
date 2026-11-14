@@ -7,13 +7,13 @@
 
 
 > [!NOTE]
-> **This repository is a public fork of [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge).** It applies local maintenance patches on official `v0.2.2-rc1`, published as `0.2.2-rc1-local`. The official sunset notice above still applies. See [Local patches](docs/guides/LOCAL_PATCHES.md) (Chinese) for what changed.
+> **This repository is a public fork of [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge).** It applies local maintenance patches on official `v0.2.2-rc1`, published as `0.2.2-rc2-local`. The official sunset notice above still applies. See [Local patches](docs/guides/LOCAL_PATCHES.md) (Chinese) for what changed.
 
 [中文](README.md) · [Setup guide](docs/guides/DSH_SETUP.md) · [Local patches](docs/guides/LOCAL_PATCHES.md) · [Changelog](CHANGELOG.md) · [Issues](https://github.com/buzuosheng/qq-bridge/issues)
 
 A local message bridge that forwards message events and AI replies between the **OneBot v11 interfaces provided by SnowLuma** and [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness).
 
-Current version: `v0.2.2-rc1-local` (based on official `v0.2.2-rc1`), targeting DSH `0.2.2-rc.1`. See [Local patches](docs/guides/LOCAL_PATCHES.md) (Chinese) for a feature overview and the [changelog](CHANGELOG.md) (Chinese) for version history.
+Current version: `v0.2.2-rc2-local` (based on official `v0.2.2-rc1`), targeting DSH `0.2.2-rc.1`. See [Local patches](docs/guides/LOCAL_PATCHES.md) (Chinese) for a feature overview and the [changelog](CHANGELOG.md) (Chinese) for version history.
 
 ## What this fork changes
 
@@ -25,6 +25,7 @@ On top of official `v0.2.2-rc1`, this fork mainly adds:
 - **Time suffix**: the current time is placed at the end of the prompt to reduce cache busting
 - **Compression and tool allowlist**: sticker-collect compression, plus `compress` and TTS tools
 - **Preset tweaks**: a soft 5-step budget, and separate paths for specified speech vs preset voice lines
+- **1301 session retirement**: on z.ai sensitive-content errors, retire the session and rebuild a clean context; other turn failures still use official `reportTurnFailure`
 
 The full list is in [Local patches](docs/guides/LOCAL_PATCHES.md). Version history is in the [changelog](CHANGELOG.md). Compare with official code: [compare](https://github.com/Derpyu520/qq-bridge/compare/v0.2.2-rc1...buzuosheng:qq-bridge:main). Contribution rules for this fork are in [Contributing](CONTRIBUTING.md#本-fork-的协作方式).
 

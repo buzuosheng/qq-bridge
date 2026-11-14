@@ -9239,11 +9239,49 @@ async function main() {
     return roleState.mode === 'silent' && key !== `private:${String(cfg.ownerQQ ?? '')}`;
   }
 
+  function isZaiSensitiveError(text) {
+    return /\b1301\b|unsafe or sensitive content|potentially unsafe|sensitive content/i.test(String(text ?? ''));
+  }
+
+  // z.ai 1301：输入/生成被判敏感。内容一旦进 DSH 会话，后续回合会反复 1301，
+  // 只能 reset。这里静默忽略本轮：清未读（避免同批黄图/黄文再次唤醒）、
+  // 退役本地会话映射（下次 ensureSession 重建干净上下文），不往 QQ 刷。
+  function retireSensitiveTurn(key) {
+    try {
+      const v2Key = canonicalV2Key(key) ?? key;
+      const st = socialV2.conversations.get(v2Key) ?? socialV2.conversations.get(key);
+      if (st) {
+        const cleared = acknowledgeMessagesV2(st, null);
+        // 近期窗口也可能被拼进唤醒快照；一并清掉，防止 reset 后立刻再喂入。
+        if (Array.isArray(st.recentMessages)) st.recentMessages = [];
+        saveSocialV2State();
+        log(`[sensitive-skip] ${key} 已忽略敏感内容回合，清空未读 ${cleared} 条并准备重建会话`);
+        appendActivity(`${key} 敏感内容已忽略（清空未读 ${cleared}，重建会话）`);
+      } else {
+        log(`[sensitive-skip] ${key} 敏感内容回合（无 socialV2 状态可清）`);
+      }
+    } catch (error) {
+      log(`[sensitive-skip] ${key} 清理未读失败：${error?.message ?? error}`);
+    }
+    try {
+      // retireSession 会 stop/archive 旧 DSH 会话并删本地映射；下一轮唤醒自动建新会话。
+      retireSession(key);
+    } catch (error) {
+      log(`[sensitive-skip] ${key} 退役会话失败：${error?.message ?? error}`);
+    }
+  }
+
   async function reportTurnFailure(key, kind, error, notify = true) {
     if (kind === 'error') {
-      const detail = redactSensitiveText(redactKnownTokensOnly(String(error?.message ?? error ?? '未知错误'))).slice(0, 500);
+      const rawMsg = String(error?.message ?? error ?? '未知错误');
+      const detail = redactSensitiveText(redactKnownTokensOnly(rawMsg)).slice(0, 500);
       log(`⚠️ agent 处理出错 (${key})：${detail}`);
       appendActivity(`${key} agent 处理出错：${detail.slice(0, 80)}`);
+      // 用原始错误文本检测，避免脱敏后丢掉 1301 标记。
+      if (isZaiSensitiveError(rawMsg) || isZaiSensitiveError(detail)) {
+        retireSensitiveTurn(key);
+        return false;
+      }
     } else {
       log(`⏹️ 回合被中止 (${key})`);
     }

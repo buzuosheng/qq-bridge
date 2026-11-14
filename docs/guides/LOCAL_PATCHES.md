@@ -1,8 +1,8 @@
-# 本地维护补丁（0.2.2-rc1-local）
+# 本地维护补丁（0.2.2-rc2-local）
 
 本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的公开 fork，在官方 `v0.2.2-rc1` 上合入个人维护补丁。官方项目已停止维护，见根目录 [SUNSET.md](../../SUNSET.md)。本 fork 仅供非商业个人使用，许可仍为 PolyForm Noncommercial 1.0.0，须保留官方 `LICENSE` 与 Required Notice。
 
-当前版本：`0.2.2-rc1-local`（2026-11-13 合入官方 `781e02f`，并补记本文档）。按版本的记录见根目录 [CHANGELOG.md](../../CHANGELOG.md)。与官方代码对照：<https://github.com/Derpyu520/qq-bridge/compare/v0.2.2-rc1...buzuosheng:qq-bridge:main>。新改动请走功能分支和 Pull Request，见 [贡献指南](../../CONTRIBUTING.md#本-fork-的协作方式)。
+当前版本：`0.2.2-rc2-local`（2026-11-14 在 `0.2.2-rc1-local` 上补回 1301 退役会话逻辑）。按版本的记录见根目录 [CHANGELOG.md](../../CHANGELOG.md)。与官方代码对照：<https://github.com/Derpyu520/qq-bridge/compare/v0.2.2-rc1...buzuosheng:qq-bridge:main>。新改动请走功能分支和 Pull Request，见 [贡献指南](../../CONTRIBUTING.md#本-fork-的协作方式)。
 
 ## 相对官方 0.2.2-rc1 新增或保留的改动
 
@@ -32,9 +32,9 @@ reserved2 组装唤醒包时，若本轮未读带 `hasMedia`、`[图片]` 或动
 
 合入时一度被本地旧预设盖掉的官方 0.2.2「会话隔离与不可信输入」「旧式发送工具禁令」已补回。
 
-## 有意跟官方 0.2.2 的部分
+### 1301 敏感内容退役会话
 
-回合出错或中止走官方的 `reportTurnFailure`：reserved2 不往 QQ 刷屏，其他模式 5 分钟内最多提醒一次。没有把本地 0.2.1-r7 里针对 1301 敏感内容退役会话的逻辑一并带过来。
+z.ai 将输入或生成判为敏感（错误含 `1301`、`unsafe or sensitive content` 等）时，内容一旦留在 DSH 会话里，后续回合会反复 1301。本 fork 在官方 `reportTurnFailure` 里识别这类错误：清空该会话未读和近期窗口，调用 `retireSession` 停用旧映射，下次 `ensureSession` 重建干净上下文，并且不往 QQ 发送失败提示。其他出错或中止仍走官方失败上报：reserved2 不刷屏，其他模式 5 分钟内最多提醒一次。
 
 ## 未纳入本仓库的内容
 

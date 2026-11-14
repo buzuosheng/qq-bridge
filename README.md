@@ -7,13 +7,13 @@
 
 
 > [!NOTE]
-> **本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的公开 fork**，在官方 `v0.2.2-rc1` 上合入了本地维护补丁，版本为 `0.2.2-rc1-local`。上方官方停更说明仍然适用。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)。
+> **本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的公开 fork**，在官方 `v0.2.2-rc1` 上合入了本地维护补丁，版本为 `0.2.2-rc2-local`。上方官方停更说明仍然适用。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)。
 
 [English](README.en.md) · [安装指南](docs/guides/DSH_SETUP.md) · [本地维护补丁](docs/guides/LOCAL_PATCHES.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/buzuosheng/qq-bridge/issues)
 
 qq-bridge 是一个本地消息桥接工具，在 SnowLuma 提供的 **OneBot v11 接口**与 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 之间转发消息事件和 AI 回复。
 
-当前版本：`v0.2.2-rc1-local`（基于官方 `v0.2.2-rc1`），适配目标为 DSH `0.2.2-rc.1`。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)，按版本记录见 [更新日志](CHANGELOG.md)。
+当前版本：`v0.2.2-rc2-local`（基于官方 `v0.2.2-rc1`），适配目标为 DSH `0.2.2-rc.1`。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)，按版本记录见 [更新日志](CHANGELOG.md)。
 
 ## 这个 fork 改了什么
 
@@ -25,6 +25,7 @@ qq-bridge 是一个本地消息桥接工具，在 SnowLuma 提供的 **OneBot v1
 - **时间后缀**：当前时间放到提示词末尾，减少缓存失效
 - **压缩与白名单**：收藏图压缩，并放行 compress / TTS 相关工具
 - **预设补强**：约 5 步软限制，以及指定文案与固定语音的分流
+- **1301 退役会话**：遇到 z.ai 敏感内容错误时退役该会话并重建上下文，其他出错仍走官方 `reportTurnFailure`
 
 完整差异见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)，按版本的记录见 [更新日志](CHANGELOG.md)。与官方代码对照见 [compare](https://github.com/Derpyu520/qq-bridge/compare/v0.2.2-rc1...buzuosheng:qq-bridge:main)。协作方式见 [贡献指南](CONTRIBUTING.md#本-fork-的协作方式)。
 
