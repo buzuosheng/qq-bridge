@@ -2,7 +2,7 @@
 
 本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的公开 fork，在官方 `v0.2.2-rc1` 上合入个人维护补丁。官方项目已停止维护，见根目录 [SUNSET.md](../../SUNSET.md)。本 fork 仅供非商业个人使用，许可仍为 PolyForm Noncommercial 1.0.0，须保留官方 `LICENSE` 与 Required Notice。
 
-当前版本：`0.2.2-rc1-local`（2026-11-13 合入官方 `781e02f`，并补记本文档）。
+当前版本：`0.2.2-rc1-local`（2026-11-13 合入官方 `781e02f`，并补记本文档）。按版本的记录见根目录 [CHANGELOG.md](../../CHANGELOG.md)。与官方代码对照：<https://github.com/Derpyu520/qq-bridge/compare/v0.2.2-rc1...buzuosheng:qq-bridge:main>。新改动请走功能分支和 Pull Request，见 [贡献指南](../../CONTRIBUTING.md#本-fork-的协作方式)。
 
 ## 相对官方 0.2.2-rc1 新增或保留的改动
 

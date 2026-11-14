@@ -9,11 +9,24 @@
 > [!NOTE]
 > **本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的公开 fork**，在官方 `v0.2.2-rc1` 上合入了本地维护补丁，版本为 `0.2.2-rc1-local`。上方官方停更说明仍然适用。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)。
 
-[English](README.en.md) · [安装指南](docs/guides/DSH_SETUP.md) · [本地维护补丁](docs/guides/LOCAL_PATCHES.md) · [问题反馈](https://github.com/buzuosheng/qq-bridge/issues)
+[English](README.en.md) · [安装指南](docs/guides/DSH_SETUP.md) · [本地维护补丁](docs/guides/LOCAL_PATCHES.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/buzuosheng/qq-bridge/issues)
 
 qq-bridge 是一个本地消息桥接工具，在 SnowLuma 提供的 **OneBot v11 接口**与 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 之间转发消息事件和 AI 回复。
 
-当前版本：`v0.2.2-rc1-local`（基于官方 `v0.2.2-rc1`），适配目标为 DSH `0.2.2-rc.1`。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)。
+当前版本：`v0.2.2-rc1-local`（基于官方 `v0.2.2-rc1`），适配目标为 DSH `0.2.2-rc.1`。本地改动见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)，按版本记录见 [更新日志](CHANGELOG.md)。
+
+## 这个 fork 改了什么
+
+在官方 `v0.2.2-rc1` 上，本 fork 主要增加了：
+
+- **卡片消息解析**：新到的 json / xml / share 等卡片段会变成短摘要
+- **看图提醒**：未读里有图或动画表情时，必须先调用看图工具
+- **会话标题**：DSH 侧栏显示「群 / 私聊 · 名称 · 日期」
+- **时间后缀**：当前时间放到提示词末尾，减少缓存失效
+- **压缩与白名单**：收藏图压缩，并放行 compress / TTS 相关工具
+- **预设补强**：约 5 步软限制，以及指定文案与固定语音的分流
+
+完整差异见 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)，按版本的记录见 [更新日志](CHANGELOG.md)。与官方代码对照见 [compare](https://github.com/Derpyu520/qq-bridge/compare/v0.2.2-rc1...buzuosheng:qq-bridge:main)。协作方式见 [贡献指南](CONTRIBUTING.md#本-fork-的协作方式)。
 
 > [!IMPORTANT]
 > **qq-bridge 是独立维护的第三方工具，不是 SnowLuma 的子项目，也不隶属于 SnowLuma、DeepSeek 或腾讯 / QQ。**
@@ -53,7 +66,7 @@ npm install
 Copy-Item config.example.json config.json
 ```
 
-默认分支 `main` 为正式发布线；`dev` 用于开发与测试。
+默认分支 `main` 是对外稳定分支，请不要直接在上面改；新改动请开功能分支，用 Pull Request 合入 `main`。协作约定见[贡献指南](CONTRIBUTING.md#本-fork-的协作方式)。
 
 ### 2. 填写配置
 
@@ -95,11 +108,12 @@ Windows 也可双击 `start.bat` 以守护模式运行，关闭窗口即停止�
 | 安装、升级或排查连接 | [DSH 安装指南](docs/guides/DSH_SETUP.md) |
 | 了解模式、权限与管理命令 | [使用规则](RULES.md) |
 | 查看模型用量与费用口径 | [用量看板](docs/guides/TOKEN_USAGE_CONSOLE.md) |
+| 查看本 fork 的改动 | [本地维护补丁](docs/guides/LOCAL_PATCHES.md) · [更新日志](CHANGELOG.md) |
 | 参与开发 | [贡献指南](CONTRIBUTING.md) · [安全基线](docs/guides/SECURITY_BASELINE.md) |
 | 报告安全漏洞 | [安全报告](SECURITY.md) |
 | 查找其他说明 | [文档索引](docs/README.md) |
 
-开发基于 `dev`，提交 PR 前运行离线回归：
+在功能分支上开发，PR 请指向 `main`，提交前运行离线回归：
 
 ```powershell
 npm run test:audit

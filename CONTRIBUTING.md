@@ -1,7 +1,24 @@
 # 参与贡献
 
-先把两件事说在前面：**这个项目只在 Windows 上跑**，**维护者通常会直接把改动提交到 `dev`**。
-后者会影响你怎么提 PR，所以第 4 节请读完。
+> [!IMPORTANT]
+> **本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的维护 fork。** 官方项目已停止维护。下方第 4、5 节里「改动直接提交到 `dev`、PR 指向 `dev`」是上游原来的做法，**在本 fork 中不再适用**。请先读「本 fork 的协作方式」。
+
+## 本 fork 的协作方式
+
+1. **不要直接在 `main` 上改。** `main` 是对外稳定分支。新工作请开功能分支（例如 `docs/fork-conventions`、`fix/...`），用 Pull Request 合入 `main`，即使只有维护者自己改也这样，方便对照和回看。
+2. **不要改写已经推送的 `main` 历史**（不强制推送、不 rebase 已发布提交）。
+3. 官方仓库可添加只读远程：`git remote add upstream https://github.com/Derpyu520/qq-bridge.git`。官方归档后通常不会再有新提交，不必频繁跟；**不要向 `upstream` 或 Derpyu520/qq-bridge 推送**。
+4. 版本号沿用官方版本并加 `-local` 后缀，例如 `0.2.2-rc1-local`。发布时打对应 tag，并写 [GitHub Release](https://github.com/buzuosheng/qq-bridge/releases)。
+5. 行为或补丁有变化时，同时更新 [CHANGELOG.md](CHANGELOG.md) 和 [本地维护补丁](docs/guides/LOCAL_PATCHES.md)（后者是相对官方的功能总览，前者按版本记录）。必要时同步 README 里的「这个 fork 改了什么」。
+6. **不要提交**：`config.json`、`state/`、备份文件、语音文件、密钥，以及真实 QQ 号 / 群号 / 令牌 / 本机绝对路径。不要用 `git add .`：类似 `config.json.bak.*`、`src/bridge.js.bak.*` 的备份不一定被忽略规则挡住。
+7. 外部贡献者的 PR 请指向 `main`。一个 PR 只做一件事；提交前运行 `npm run test:audit`。
+
+克隆本 fork：
+
+```bat
+git clone https://github.com/buzuosheng/qq-bridge.git
+cd qq-bridge
+```
 
 ## 1. 环境
 
@@ -14,7 +31,7 @@
 ## 2. 本地跑起来
 
 ```bat
-git clone https://github.com/Derpyu520/qq-bridge.git
+git clone https://github.com/buzuosheng/qq-bridge.git
 cd qq-bridge
 npm install
 npm run test:audit
@@ -42,7 +59,7 @@ npm run test:audit
 ## 4. 提交 PR
 
 **一个 PR 只做一件事。** 把 12 个不相关的修复塞进一个 PR，评审成本会高到没人看得完。
-**PR 的目标分支是 `dev`**（见第 5 节的分支模型）；`main` 只在发布时从 `dev` 合并。
+**对本 fork 而言，PR 的目标分支是 `main`**（见上方「本 fork 的协作方式」）。上游原先以 `dev` 为目标分支的说明仅作历史参考。
 
 PR 里请写清楚：
 
@@ -56,21 +73,13 @@ PR 里请写清楚：
 **不要提交**：真实 QQ 号 / 群号 / 昵称、任何 token 或密钥、本机绝对路径、`state/`、`node_modules/`。
 `privacy-scan` 会拦一部分，但它不是万能网。
 
-## 5. 维护者的合并方式（据实说明）
+## 5. 维护者的合并方式
 
-本仓库分两条线：`main` 是**正式发布线**，只收经过验证的版本；`dev` 是**测试 / 开发线**，
-持续更新、随时提交，正常状态下**领先** `main`。发布时才把 `dev` 合入 `main`，所以两条线可能
-短暂同步，但 `dev` 不应落后于 `main`。由此：
+**本 fork 以 `main` 为对外稳定分支。** 维护者和外部贡献者都不要直接在 `main` 上提交，请走功能分支和 Pull Request。上游原先「维护者直接提交到 `dev`、PR 指向 `dev`」的做法不再使用。
 
-- 维护者的日常改动**直接提交到 `dev`**；
-- **外部贡献者的 PR 一律以 `dev` 为目标分支**（提向 `main` 的 PR 会被改指向 `dev`）；
-- 你的 PR **可能直接合并**，也可能被**参考后重新实现**，还可能在 `dev` 里已经修好了；
-- 以上三种情况都会在 PR 里回复说明，不会让你干等；
-- 如果 `dev` 里已包含等价修复，维护者会指出对应的提交并关闭 PR——**这不代表你的工作没价值**，
-  通常只是两条线同时撞上了同一个问题。
-
-想用正式发布版就待在 `main`（`git clone` 默认拿到的就是它）；想跟最新改动就切到 `dev`
-（测试线，**不保证稳定**）。
+- 你的 PR 合并进 `main` 前应有更新日志（如有行为变化）和 `npm run test:audit` 结果；
+- PR 可能直接合并，也可能被讨论后调整再合；
+- 想用当前发布内容，克隆后默认停留在 `main` 即可。
 
 ## 6. 许可
 
